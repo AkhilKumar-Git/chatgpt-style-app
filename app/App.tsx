@@ -1,9 +1,16 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import ChatMessage from './components/ChatMessage';
-import ChatInput from './components/ChatInput';
+import { useRouter } from 'next/navigation';
+
 import { Message } from './types';
+
+interface UserPreferences {
+  tone?: string;
+  length?: string;
+  examples?: string;
+  language?: string;
+}
 
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([
@@ -16,6 +23,8 @@ export default function App() {
   ]);
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [preferences, setPreferences] = useState<UserPreferences | null>(null);
+  const router = useRouter();
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -26,21 +35,53 @@ export default function App() {
   }, [messages]);
 
   const generateResponse = async (userMessage: string): Promise<string> => {
-    // Simulate API call delay
-    await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000));
-    
-    // Simple response generation (you can replace this with actual AI API calls)
-    const responses = [
-      "That's an interesting question! Let me think about that...",
-      "I understand what you're asking. Here's my perspective on that:",
-      "Thank you for sharing that with me. Here's what I think:",
-      "That's a great point! Let me elaborate on that:",
-      "I appreciate you bringing this up. Here's my response:",
-    ];
-    
-    const randomResponse = responses[Math.floor(Math.random() * responses.length)];
-    return `${randomResponse}\n\n${userMessage.split(' ').reverse().join(' ')} - Here's your message reversed as an example response!`;
+    // IMPORTANT: Set your OpenAI API key in a .env file as NEXT_PUBLIC_OPENAI_API_KEY
+    // For security, in production you should call OpenAI from a backend, not directly from the client.
+    const apiKey = process.env.NEXT_PUBLIC_OPENAI_API_KEY;
+    if (!apiKey) {
+      return 'OpenAI API key is not set. Please set NEXT_PUBLIC_OPENAI_API_KEY in your .env file.';
+    }
+    try {
+      // Prepare the last 5 messages as context, mapped to OpenAI's format
+      const contextMessages = messages.slice(-5).map((msg) => ({
+        role: msg.role,
+        content: msg.content,
+      }));
+      // Add user preferences as a system message
+      let systemContent = "You are a helpful assistant.";
+      if (preferences) {
+        systemContent += `\nUser preferences: Tone: ${preferences.tone || 'N/A'}, Length: ${preferences.length || 'N/A'}, Examples: ${preferences.examples || 'N/A'}, Language: ${preferences.language || 'N/A'}`;
+      }
+      const openaiMessages = [
+        { role: 'system', content: systemContent },
+        ...contextMessages,
+        { role: 'user', content: userMessage },
+      ];
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: 'gpt-3.5-turbo',
+          messages: openaiMessages,
+          max_tokens: 256,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(`OpenAI API error: ${response.status}`);
+      }
+      const data = await response.json();
+      return data.choices?.[0]?.message?.content?.trim() || 'No response from OpenAI.';
+    } catch (err: any) {
+      console.error('OpenAI API error:', err);
+      return 'Sorry, I could not get a response from OpenAI.';
+    }
   };
+
+  // Add state for input value
+  const [inputValue, setInputValue] = useState('');
 
   const handleSendMessage = async (content: string) => {
     const userMessage: Message = {
@@ -77,6 +118,14 @@ export default function App() {
     }
   };
 
+  // New handler for button click
+  const handleInputSend = () => {
+    if (inputValue.trim() !== '') {
+      handleSendMessage(inputValue.trim());
+      setInputValue('');
+    }
+  };
+
   return (
     <div className="flex flex-col h-screen bg-gray-100 dark:bg-gray-900">
       {/* Header */}
@@ -89,6 +138,12 @@ export default function App() {
             <span className="text-sm text-gray-600 dark:text-gray-400">
               Welcome back!
             </span>
+            <button
+              className="text-sm bg-blue-600 hover:bg-blue-700 text-white font-medium px-4 py-2 rounded transition-colors"
+              onClick={() => router.push('/gallery')}
+            >
+              Go to Gallery
+            </button>
             <a
               href="/login"
               className="text-sm text-green-600 hover:text-green-500 dark:text-green-400 dark:hover:text-green-300 font-medium"
@@ -103,7 +158,10 @@ export default function App() {
       <div className="flex-1 overflow-y-auto scrollbar-thin">
         <div className="max-w-4xl mx-auto">
           {messages.map((message) => (
-            <ChatMessage key={message.id} message={message} />
+            <div key={message.id} className={`p-4 my-2 rounded-lg ${message.role === 'assistant' ? 'bg-green-100 dark:bg-green-900 text-black dark:text-white' : 'bg-white dark:bg-gray-800 text-black dark:text-white'}`}>
+              <div className="text-xs font-semibold mb-1">{message.role === 'assistant' ? 'Assistant' : 'You'}</div>
+              <div>{message.content}</div>
+            </div>
           ))}
           {isLoading && (
             <div className="flex gap-4 p-4">
@@ -127,8 +185,23 @@ export default function App() {
       </div>
 
       {/* Input */}
-      <div className="max-w-4xl mx-auto w-full">
-        <ChatInput onSendMessage={handleSendMessage} disabled={isLoading} />
+      <div className="max-w-4xl mx-auto w-full p-4 flex gap-2">
+        <textarea
+          className="flex-1 rounded border border-gray-300 dark:border-gray-700 p-2 resize-none bg-white dark:bg-gray-800 text-black dark:text-white"
+          rows={2}
+          value={inputValue}
+          onChange={e => setInputValue(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleInputSend(); } }}
+          placeholder="Type your message..."
+          disabled={isLoading}
+        />
+        <button
+          className="px-4 py-2 rounded bg-green-600 text-white font-semibold hover:bg-green-700 disabled:opacity-50"
+          onClick={handleInputSend}
+          disabled={isLoading || inputValue.trim() === ''}
+        >
+          Send
+        </button>
       </div>
     </div>
   );
